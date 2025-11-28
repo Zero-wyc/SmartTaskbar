@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace SmartTaskbar
 {
@@ -6,6 +7,16 @@ namespace SmartTaskbar
 
     public static class TaskbarHelper
     {
+        #region Windows API
+        
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+        
+        private const int SM_CXSCREEN = 0;
+        private const int SM_CYSCREEN = 1;
+        
+        #endregion
+        
         #region Initialize the taskbar Info
 
         /// <summary>
@@ -15,6 +26,10 @@ namespace SmartTaskbar
 
         public static TaskbarInfo InitTaskbar()
         {
+            // Get primary screen dimensions using Windows API
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+            
             // Find the main taskbar handle
             var handle = FindWindow(TrayMainTaskbarClassName, null);
 
@@ -33,9 +48,9 @@ namespace SmartTaskbar
 
             // todo: The main taskbar is not always on the Primary desktop!!! When this happens, the program will run abnormally
 
-            if (rect.right - rect.left == Screen.PrimaryScreen.Bounds.Width)
+            if (rect.right - rect.left == screenWidth)
             {
-                var bottomΔ = rect.bottom - Screen.PrimaryScreen.Bounds.Bottom;
+                var bottomΔ = rect.bottom - screenHeight;
                 // taskbar on the top or bottom
                 if (bottomΔ == 0)
                     return new TaskbarInfo(handle,
@@ -63,7 +78,7 @@ namespace SmartTaskbar
                                            TaskbarPosition.Bottom,
                                            monitor);
 
-                var topΔ = rect.top - Screen.PrimaryScreen.Bounds.Top;
+                var topΔ = rect.top - 0;
                 return new TaskbarInfo(handle,
                                        new TagRect
                                        {
@@ -79,7 +94,7 @@ namespace SmartTaskbar
 
             // taskbar on the left or right
 
-            var leftΔ = rect.left - Screen.PrimaryScreen.Bounds.Left;
+            var leftΔ = rect.left - 0;
 
             if (leftΔ == 0)
                 return new TaskbarInfo(handle,
@@ -107,7 +122,7 @@ namespace SmartTaskbar
                                        TaskbarPosition.Left,
                                        monitor);
 
-            var rightΔ = rect.right - Screen.PrimaryScreen.Bounds.Right;
+            var rightΔ = rect.right - screenWidth;
             return new TaskbarInfo(handle,
                                    new TagRect
                                    {
@@ -404,8 +419,14 @@ namespace SmartTaskbar
         }
 
         public static bool AreaCompare(this in TagRect rect)
-            => 3 * (rect.bottom - rect.top) * (rect.right - rect.left)
-               > Screen.PrimaryScreen.Bounds.Width * Screen.PrimaryScreen.Bounds.Height;
+        {
+            // Get primary screen dimensions using Windows API
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+            
+            return 3 * (rect.bottom - rect.top) * (rect.right - rect.left)
+                   > screenWidth * screenHeight;
+        }
 
         #endregion
     }

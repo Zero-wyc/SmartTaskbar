@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel;
 using System.Diagnostics;
-using Timer = System.Windows.Forms.Timer;
+using System.Threading;
 
 namespace SmartTaskbar
 {
@@ -22,15 +22,10 @@ namespace SmartTaskbar
         public Engine(Container container)
         {
             // 125 milliseconds is a balance between user-acceptable perception and system call time.
-            _timer = new Timer(container)
-            {
-                Interval = 125
-            };
-            _timer.Tick += Timer_Tick;
-            _timer.Start();
+            _timer = new Timer(Timer_Tick, null, 0, 125);
         }
 
-        private static void Timer_Tick(object? sender, EventArgs e)
+        private static void Timer_Tick(object? state)
         {
             if (UserSettings.AutoModeType != AutoModeType.Auto)
                 return;
@@ -81,7 +76,7 @@ namespace SmartTaskbar
 
         private static void CheckCurrentWindow()
         {
-            var behavior =
+            var behavior = 
                 _taskbar.CheckIfForegroundWindowIntersectTaskbar(DesktopHandleSet,
                                                                  NonForegroundShowHandleSet,
                                                                  out var info);

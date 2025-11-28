@@ -1,222 +1,435 @@
-﻿using System.ComponentModel;
+﻿using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Windows.System;
 using Windows.UI.ViewManagement;
+using SmartTaskbar.Helpers;
 using SmartTaskbar.Languages;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Dispatching;
 
 namespace SmartTaskbar
 {
-    internal class SystemTray : ApplicationContext
+    internal class SystemTray
     {
         private const int TrayTolerance = 4;
-        private readonly ToolStripMenuItem _animationInBar;
-        private readonly ToolStripMenuItem _autoMode;
-
-        private readonly Container _container = new();
-        private readonly ContextMenuStrip _contextMenuStrip;
-
+        private const int WM_USER = 0x0400;
+        private const int WM_TRAYICON = WM_USER + 1;
+        private const int WM_RBUTTONDOWN = 0x0204;
+        private const int WM_LBUTTONDBLCLK = 0x0203;
+        
+        private readonly IntPtr _windowHandle;
+        private readonly WndProcDelegate _wndProcDelegate;
         private readonly Engine _engine;
-        private readonly ToolStripMenuItem _exit;
-        private readonly NotifyIcon _notifyIcon;
         private readonly ResourceCulture _resourceCulture = new();
-        private readonly ToolStripMenuItem _showBarOnExit;
-
+        
+        private readonly string _aboutText;
+        private readonly string _animationText;
+        private readonly string _autoModeText;
+        private readonly string _exitText;
+        private readonly string _showBarOnExitText;
+        
+        private bool _animationChecked;
+        private bool _autoModeChecked;
+        private bool _showBarOnExitChecked;
+        
+        private MenuFlyout _contextMenu;
+        private DispatcherQueue _dispatcherQueue;
+        
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct NOTIFYICONDATA
+        {
+            public uint cbSize;
+            public IntPtr hWnd;
+            public uint uID;
+            public uint uFlags;
+            public uint uCallbackMessage;
+            public IntPtr hIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string szTip;
+            public uint dwState;
+            public uint dwStateMask;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string szInfo;
+            public uint uTimeoutOrVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+            public string szInfoTitle;
+            public uint dwInfoFlags;
+            public IntPtr guidItem;
+            public IntPtr hBalloonIcon;
+        }
+        
+        private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+        
+        [DllImport("shell32.dll", SetLastError = true)]
+        private static extern bool Shell_NotifyIcon(uint dwMessage, ref NOTIFYICONDATA lpData);
+        
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr CreateWindowEx(
+            uint dwExStyle,
+            string lpClassName,
+            string lpWindowName,
+            uint dwStyle,
+            int x,
+            int y,
+            int nWidth,
+            int nHeight,
+            IntPtr hWndParent,
+            IntPtr hMenu,
+            IntPtr hInstance,
+            IntPtr lpParam);
+        
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr DefWindowProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
+        
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool RegisterClassEx(ref WNDCLASSEX wcex);
+        
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool DestroyWindow(IntPtr hWnd);
+        
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern ushort RegisterWindowMessage(string lpString);
+        
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+        
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT lpPoint);
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WNDCLASSEX
+        {
+            public uint cbSize;
+            public uint style;
+            public WndProcDelegate lpfnWndProc;
+            public int cbClsExtra;
+            public int cbWndExtra;
+            public IntPtr hInstance;
+            public IntPtr hIcon;
+            public IntPtr hCursor;
+            public IntPtr hbrBackground;
+            public string lpszMenuName;
+            public string lpszClassName;
+            public IntPtr hIconSm;
+        }
+        
         public SystemTray()
         {
-            #region Initialization
-
-            _engine = new Engine(_container);
-
-            var font = new Font("Segoe UI", 10.5F);
-
-            var about = new ToolStripMenuItem(_resourceCulture.GetString(LangName.About))
-            {
-                Font = font
-            };
-            _animationInBar = new ToolStripMenuItem(_resourceCulture.GetString(LangName.Animation))
-            {
-                Font = font
-            };
-            _showBarOnExit = new ToolStripMenuItem(_resourceCulture.GetString(LangName.ShowBarOnExit))
-            {
-                Font = font
-            };
-            _autoMode = new ToolStripMenuItem(_resourceCulture.GetString(LangName.Auto))
-            {
-                Font = font
-            };
-            _exit = new ToolStripMenuItem(_resourceCulture.GetString(LangName.Exit))
-            {
-                Font = font
-            };
-
-            _contextMenuStrip = new ContextMenuStrip(_container)
-            {
-                Renderer = new Win11Renderer()
-            };
-
-            _contextMenuStrip.Items.AddRange(new ToolStripItem[]
-            {
-                about,
-                _animationInBar,
-                new ToolStripSeparator(),
-                _autoMode,
-                new ToolStripSeparator(),
-                _showBarOnExit,
-                _exit
-            });
-
-            _notifyIcon = new NotifyIcon(_container)
-            {
-                Text = Application.ProductName,
-                Icon = Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White,
-                Visible = true
-            };
-
-            #endregion
-
-            #region Load Event
-
-            about.Click += AboutOnClick;
-
-            _animationInBar.Click += AnimationInBarOnClick;
-
-            _showBarOnExit.Click += ShowBarOnExitOnClick;
-
-            _autoMode.Click += AutoModeOnClick;
-
-            _exit.Click += ExitOnClick;
-
-            _notifyIcon.MouseClick += NotifyIconOnMouseClick;
-
-            _notifyIcon.MouseDoubleClick += NotifyIconOnMouseDoubleClick;
-
+            // Initialize WinUI dispatcher queue
+            _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+            
+            // Initialize engine
+            _engine = new Engine(null);
+            
+            // Initialize localized strings
+            _aboutText = _resourceCulture.GetString(LangName.About);
+            _animationText = _resourceCulture.GetString(LangName.Animation);
+            _autoModeText = _resourceCulture.GetString(LangName.Auto);
+            _exitText = _resourceCulture.GetString(LangName.Exit);
+            _showBarOnExitText = _resourceCulture.GetString(LangName.ShowBarOnExit);
+            
+            // Create message-only window for tray icon
+            _wndProcDelegate = WndProc;
+            _windowHandle = CreateMessageOnlyWindow();
+            
+            // Create context menu
+            CreateContextMenu();
+            
+            // Add tray icon
+            AddTrayIcon();
+            
+            // Subscribe to theme changes
             Fun.UiSettings.ColorValuesChanged += UISettingsOnColorValuesChanged;
-
-            Application.ApplicationExit += Application_ApplicationExit;
-
-            #endregion
         }
-
-        private void AboutOnClick(object? sender, EventArgs e)
-            => _ = Launcher.LaunchUriAsync(new Uri("https://github.com/ChanpleCai/SmartTaskbar"));
-
-        private void UISettingsOnColorValuesChanged(UISettings s, object e)
-            => _notifyIcon.Icon = Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;
-
-        private void NotifyIconOnMouseDoubleClick(object? s, MouseEventArgs e)
+        
+        private IntPtr CreateMessageOnlyWindow()
+        {
+            var className = "SmartTaskbarTrayWindow";
+            var hInstance = GetModuleHandle(null);
+            
+            var wcex = new WNDCLASSEX
+            {
+                cbSize = (uint)Marshal.SizeOf(typeof(WNDCLASSEX)),
+                style = 0,
+                lpfnWndProc = _wndProcDelegate,
+                cbClsExtra = 0,
+                cbWndExtra = 0,
+                hInstance = hInstance,
+                hIcon = IntPtr.Zero,
+                hCursor = IntPtr.Zero,
+                hbrBackground = IntPtr.Zero,
+                lpszMenuName = null,
+                lpszClassName = className,
+                hIconSm = IntPtr.Zero
+            };
+            
+            RegisterClassEx(ref wcex);
+            
+            return CreateWindowEx(
+                0,
+                className,
+                "SmartTaskbar Tray Window",
+                0,
+                0,
+                0,
+                0,
+                0,
+                new IntPtr(-3), // HWND_MESSAGE
+                IntPtr.Zero,
+                hInstance,
+                IntPtr.Zero);
+        }
+        
+        private void CreateContextMenu()
+        {
+            _contextMenu = new MenuFlyout();
+            
+            // About item
+            var aboutItem = new MenuFlyoutItem 
+            {
+                Text = _aboutText,
+                AccessKey = "A",
+                AutomationProperties.Name = _aboutText,
+                AutomationProperties.HelpText = "Open SmartTaskbar GitHub page"
+            };
+            aboutItem.Click += AboutOnClick;
+            _contextMenu.Items.Add(aboutItem);
+            
+            // Animation item
+            var animationItem = new ToggleMenuFlyoutItem 
+            {
+                Text = _animationText,
+                AccessKey = "N",
+                AutomationProperties.Name = _animationText,
+                AutomationProperties.HelpText = "Toggle taskbar animation"
+            };
+            animationItem.Click += AnimationInBarOnClick;
+            _contextMenu.Items.Add(animationItem);
+            
+            // Separator
+            _contextMenu.Items.Add(new MenuFlyoutSeparator());
+            
+            // Auto mode item
+            var autoModeItem = new ToggleMenuFlyoutItem 
+            {
+                Text = _autoModeText,
+                AccessKey = "U",
+                AutomationProperties.Name = _autoModeText,
+                AutomationProperties.HelpText = "Toggle auto mode"
+            };
+            autoModeItem.Click += AutoModeOnClick;
+            _contextMenu.Items.Add(autoModeItem);
+            
+            // Separator
+            _contextMenu.Items.Add(new MenuFlyoutSeparator());
+            
+            // Show bar on exit item
+            var showBarOnExitItem = new ToggleMenuFlyoutItem 
+            {
+                Text = _showBarOnExitText,
+                AccessKey = "S",
+                AutomationProperties.Name = _showBarOnExitText,
+                AutomationProperties.HelpText = "Show taskbar on exit"
+            };
+            showBarOnExitItem.Click += ShowBarOnExitOnClick;
+            _contextMenu.Items.Add(showBarOnExitItem);
+            
+            // Exit item
+            var exitItem = new MenuFlyoutItem 
+            {
+                Text = _exitText,
+                AccessKey = "E",
+                AutomationProperties.Name = _exitText,
+                AutomationProperties.HelpText = "Exit SmartTaskbar"
+            };
+            exitItem.Click += ExitOnClick;
+            _contextMenu.Items.Add(exitItem);
+        }
+        
+        private void AddTrayIcon()
+        {
+            var icon = Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;
+            var hIcon = icon.Handle;
+            
+            var nid = new NOTIFYICONDATA
+            {
+                cbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONDATA)),
+                hWnd = _windowHandle,
+                uID = 1,
+                uFlags = 0x00000001 | 0x00000002 | 0x00000004, // NIF_ICON | NIF_MESSAGE | NIF_TIP
+                uCallbackMessage = WM_TRAYICON,
+                hIcon = hIcon,
+                szTip = "SmartTaskbar"
+            };
+            
+            Shell_NotifyIcon(0, ref nid); // NIM_ADD
+        }
+        
+        private void RemoveTrayIcon()
+        {
+            var nid = new NOTIFYICONDATA
+            {
+                cbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONDATA)),
+                hWnd = _windowHandle,
+                uID = 1
+            };
+            
+            Shell_NotifyIcon(2, ref nid); // NIM_DELETE
+        }
+        
+        private IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+        {
+            if (msg == WM_TRAYICON)
+            {
+                switch (lParam.ToInt32())
+                {
+                    case WM_RBUTTONDOWN:
+                        // Show context menu on right click
+                        _dispatcherQueue.TryEnqueue(() => ShowContextMenu());
+                        break;
+                    case WM_LBUTTONDBLCLK:
+                        // Handle double click
+                        _dispatcherQueue.TryEnqueue(() => HandleDoubleClick());
+                        break;
+                }
+            }
+            
+            return DefWindowProc(hWnd, msg, wParam, lParam);
+        }
+        
+        private void ShowContextMenu()
+        {
+            // Update menu item states
+            _animationChecked = Fun.IsEnableTaskbarAnimation();
+            _showBarOnExitChecked = UserSettings.ShowTaskbarWhenExit;
+            _autoModeChecked = UserSettings.AutoModeType == AutoModeType.Auto;
+            
+            // Update UI from dispatcher thread
+            if (_contextMenu != null)
+            {
+                if (_contextMenu.Items[1] is ToggleMenuFlyoutItem animationItem)
+                    animationItem.IsChecked = _animationChecked;
+                
+                if (_contextMenu.Items[3] is ToggleMenuFlyoutItem autoModeItem)
+                    autoModeItem.IsChecked = _autoModeChecked;
+                
+                if (_contextMenu.Items[5] is ToggleMenuFlyoutItem showBarOnExitItem)
+                    showBarOnExitItem.IsChecked = _showBarOnExitChecked;
+                
+                // Get cursor position
+                GetCursorPos(out POINT cursorPos);
+                
+                // Show menu at cursor position
+                _contextMenu.ShowAt(new Point(cursorPos.X, cursorPos.Y));
+            }
+        }
+        
+        private void HandleDoubleClick()
         {
             UserSettings.AutoModeType = AutoModeType.None;
-
             Fun.ChangeAutoHide();
             HideBar();
         }
-
-        private void NotifyIconOnMouseClick(object? s, MouseEventArgs e)
+        
+        private void AboutOnClick(object sender, RoutedEventArgs e)
         {
-            if (e.Button != MouseButtons.Right) return;
-
-            _animationInBar.Checked = Fun.IsEnableTaskbarAnimation();
-            _showBarOnExit.Checked = UserSettings.ShowTaskbarWhenExit;
-            _autoMode.Checked = UserSettings.AutoModeType == AutoModeType.Auto;
-
-            ShowMenu();
-
-            Fun.SetForegroundWindow(_contextMenuStrip.Handle);
+            _ = Launcher.LaunchUriAsync(new Uri("https://github.com/ChanpleCai/SmartTaskbar"));
         }
-
-        private void ShowMenu()
+        
+        private void AnimationInBarOnClick(object sender, RoutedEventArgs e)
         {
-            var taskbar = TaskbarHelper.InitTaskbar();
-
-            if (taskbar.Handle == IntPtr.Zero)
-                return;
-
-            switch (taskbar.Position)
+            if (sender is ToggleMenuFlyoutItem item)
             {
-                case TaskbarPosition.Bottom:
-                    if (Cursor.Position.X + _contextMenuStrip.Width > Screen.PrimaryScreen.Bounds.Right)
-                        _contextMenuStrip.Show(
-                            Screen.PrimaryScreen.Bounds.Right - _contextMenuStrip.Width - TrayTolerance,
-                            taskbar.Rect.top - _contextMenuStrip.Height - TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(Cursor.Position.X - TrayTolerance,
-                                               taskbar.Rect.top - _contextMenuStrip.Height - TrayTolerance);
-                    break;
-                case TaskbarPosition.Left:
-                    if (Cursor.Position.Y + _contextMenuStrip.Height > Screen.PrimaryScreen.Bounds.Bottom)
-                        _contextMenuStrip.Show(taskbar.Rect.right + TrayTolerance,
-                                               Screen.PrimaryScreen.Bounds.Bottom
-                                               - _contextMenuStrip.Height
-                                               - TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(taskbar.Rect.right + TrayTolerance,
-                                               Cursor.Position.Y - TrayTolerance);
-                    break;
-                case TaskbarPosition.Right:
-                    if (Cursor.Position.Y + _contextMenuStrip.Height > Screen.PrimaryScreen.Bounds.Bottom)
-                        _contextMenuStrip.Show(taskbar.Rect.left - TrayTolerance - _contextMenuStrip.Width,
-                                               Screen.PrimaryScreen.Bounds.Bottom
-                                               - _contextMenuStrip.Height
-                                               - TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(taskbar.Rect.left - TrayTolerance - _contextMenuStrip.Width,
-                                               Cursor.Position.Y - TrayTolerance);
-                    break;
-                case TaskbarPosition.Top:
-                    if (Cursor.Position.X + _contextMenuStrip.Width > Screen.PrimaryScreen.Bounds.Right)
-                        _contextMenuStrip.Show(
-                            Screen.PrimaryScreen.Bounds.Right - _contextMenuStrip.Width - TrayTolerance,
-                            taskbar.Rect.bottom + TrayTolerance);
-                    else
-                        _contextMenuStrip.Show(Cursor.Position.X - TrayTolerance,
-                                               taskbar.Rect.bottom + TrayTolerance);
-                    break;
+                _animationChecked = Fun.ChangeTaskbarAnimation();
+                item.IsChecked = _animationChecked;
             }
         }
-
-        private static void HideBar()
+        
+        private void AutoModeOnClick(object sender, RoutedEventArgs e)
         {
-            if (Fun.IsNotAutoHide())
-                return;
-
-            var taskbar = TaskbarHelper.InitTaskbar();
-
-            if (taskbar.Handle != IntPtr.Zero)
-                taskbar.HideTaskbar();
+            if (sender is ToggleMenuFlyoutItem item)
+            {
+                if (_autoModeChecked)
+                {
+                    UserSettings.AutoModeType = AutoModeType.None;
+                    HideBar();
+                    _autoModeChecked = false;
+                }
+                else
+                {
+                    UserSettings.AutoModeType = AutoModeType.Auto;
+                    _autoModeChecked = true;
+                }
+                
+                item.IsChecked = _autoModeChecked;
+            }
         }
-
-        private void ExitOnClick(object? s, EventArgs e)
+        
+        private void ShowBarOnExitOnClick(object sender, RoutedEventArgs e)
+        {
+            if (sender is ToggleMenuFlyoutItem item)
+            {
+                _showBarOnExitChecked = !_showBarOnExitChecked;
+                UserSettings.ShowTaskbarWhenExit = _showBarOnExitChecked;
+                item.IsChecked = _showBarOnExitChecked;
+            }
+        }
+        
+        private void ExitOnClick(object sender, RoutedEventArgs e)
         {
             if (UserSettings.ShowTaskbarWhenExit)
                 Fun.CancelAutoHide();
             else
                 HideBar();
-            _container?.Dispose();
-            Application.Exit();
-        }
-
-        private void ShowBarOnExitOnClick(object? s, EventArgs e)
-            => UserSettings.ShowTaskbarWhenExit = !_showBarOnExit.Checked;
-
-        private void AutoModeOnClick(object? s, EventArgs e)
-        {
-            if (_autoMode.Checked)
+            
+            RemoveTrayIcon();
+            DestroyWindow(_windowHandle);
+            
+            // Exit application
+            _ = Task.Run(async () =>
             {
-                UserSettings.AutoModeType = AutoModeType.None;
-                HideBar();
-            }
-            else { UserSettings.AutoModeType = AutoModeType.Auto; }
+                await Task.Delay(500);
+                Process.GetCurrentProcess().Kill();
+            });
         }
-
-        private void AnimationInBarOnClick(object? s, EventArgs e)
-            => _animationInBar.Checked = Fun.ChangeTaskbarAnimation();
-
-        private static async void Application_ApplicationExit(object? sender, EventArgs e)
+        
+        private static void HideBar()
         {
-            // Weird bug.
-            await Task.Delay(500);
-            Process.GetCurrentProcess().Kill();
+            if (Fun.IsNotAutoHide())
+                return;
+            
+            var taskbar = TaskbarHelper.InitTaskbar();
+            
+            if (taskbar.Handle != IntPtr.Zero)
+                taskbar.HideTaskbar();
+        }
+        
+        private void UISettingsOnColorValuesChanged(UISettings s, object e)
+        {
+            // Update tray icon based on theme
+            var icon = Fun.IsLightTheme() ? IconResource.Logo_Black : IconResource.Logo_White;
+            var hIcon = icon.Handle;
+            
+            var nid = new NOTIFYICONDATA
+            {
+                cbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONDATA)),
+                hWnd = _windowHandle,
+                uID = 1,
+                uFlags = 0x00000001, // NIF_ICON
+                hIcon = hIcon
+            };
+            
+            Shell_NotifyIcon(1, ref nid); // NIM_MODIFY
         }
     }
 }

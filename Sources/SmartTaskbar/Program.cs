@@ -13,9 +13,15 @@ namespace SmartTaskbar
             {
                 if (!createNew) return;
 
-                ApplicationConfiguration.Initialize();
-                // Start a tray instead of a WinForm to reduce memory usage
-                Application.Run(new SystemTray());
+                // Initialize WinUI 3 app
+                WinRT.ComWrappersSupport.InitializeComWrappers();
+                Microsoft.UI.Xaml.Application.Start((p) =>
+                {
+                    var context = new Microsoft.UI.Dispatching.DispatcherQueueSynchronizationContext(
+                        Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+                    SynchronizationContext.SetSynchronizationContext(context);
+                    new App();
+                });
             }
         }
     }
